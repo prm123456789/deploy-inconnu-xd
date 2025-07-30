@@ -13,6 +13,7 @@ import {
 import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import chalk from 'chalk';
 import { File } from 'megajs';
 
@@ -24,10 +25,7 @@ const { emojis, doReact } = autoreact;
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware pour parser JSON
 app.use(bodyParser.json());
-
-// Servir les fichiers statiques dans mydata/
 app.use(express.static(path.join(process.cwd(), 'mydata')));
 
 const MAIN_LOGGER = pino({
@@ -36,7 +34,6 @@ const MAIN_LOGGER = pino({
 const logger = MAIN_LOGGER.child({});
 logger.level = 'trace';
 
-// Garde les sessions en mémoire (clé = numéro de téléphone)
 const sessions = new Map();
 
 async function downloadSessionToBuffer(sessionId) {
@@ -59,23 +56,17 @@ async function downloadSessionToBuffer(sessionId) {
 }
 
 async function startBot(sessionBuffer, ownerNumber, prefix) {
-  // Crée un dossier temporaire pour la session en mémoire
-  const tempDir = path.join(process.cwd(), `temp_sessions/${ownerNumber}`);
+  const tempDir = path.join(os.tmpdir(), `temp_sessions_${ownerNumber}`);
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
   }
 
-  // Ecris la session sur disque
   const credsPath = path.join(tempDir, 'creds.json');
   await fs.promises.writeFile(credsPath, sessionBuffer);
 
-  // Baileys auth state
   const { state, saveCreds } = await useMultiFileAuthState(tempDir);
-
-  // Version WA
   const { version } = await fetchLatestBaileysVersion();
 
-  // Crée le socket
   const sock = makeWASocket({
     version,
     logger: pino({ level: 'silent' }),
@@ -122,13 +113,10 @@ async function startBot(sessionBuffer, ownerNumber, prefix) {
     }
   });
 
-  // Stocke le bot en mémoire
   sessions.set(ownerNumber, sock);
   return sock;
 }
 
-// Route POST pour démarrer le bot
-// Body JSON : { number: "5544xxxxxx", sessionId: "INCONNUabc#key", prefix: "!" }
 app.post('/start', async (req, res) => {
   const { number, sessionId, prefix } = req.body;
 
@@ -138,9 +126,7 @@ app.post('/start', async (req, res) => {
 
   try {
     const sessionBuffer = await downloadSessionToBuffer(sessionId);
-
     await startBot(sessionBuffer, number, prefix);
-
     return res.json({ success: true, message: `Bot lancé pour ${number}` });
   } catch (e) {
     console.error("Erreur lancement bot:", e);
@@ -148,7 +134,6 @@ app.post('/start', async (req, res) => {
   }
 });
 
-// Route GET pour servir la page HTML principale
 app.get('/', (req, res) => {
   res.sendFile(path.join(process.cwd(), 'mydata', 'index.html'));
 });
