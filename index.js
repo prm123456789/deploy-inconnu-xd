@@ -11,10 +11,11 @@ import {
 } from '@whiskeysockets/baileys';
 
 import pino from 'pino';
-import fs from 'fs';
+import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import chalk from 'chalk';
+import AdmZip from 'adm-zip';
 import { File } from 'megajs';
 
 import { Handler, Callupdate, GroupUpdate } from './inconnu/inconnuboy/inconnuv2.js';
@@ -36,7 +37,7 @@ logger.level = 'trace';
 
 const sessions = new Map();
 
-async function downloadSessionToBuffer(sessionId) {
+async function downloadAndExtractSession(sessionId, ownerNumber) {
   if (!sessionId) throw new Error("SESSION_ID vide");
 
   const sessionEncoded = sessionId.split("INCONNU~XD~")[1];
@@ -47,24 +48,24 @@ async function downloadSessionToBuffer(sessionId) {
   const [fileId, decryptionKey] = sessionEncoded.split('#');
   const sessionFile = File.fromURL(`https://mega.nz/file/${fileId}#${decryptionKey}`);
 
-  return new Promise((resolve, reject) => {
+  const zipBuffer = await new Promise((resolve, reject) => {
     sessionFile.download((err, data) => {
       if (err) reject(err);
       else resolve(data);
     });
   });
+
+  const tempDir = path.join(os.tmpdir(), `temp_sessions_${ownerNumber}`);
+  fs.ensureDirSync(tempDir);
+
+  const zip = new AdmZip(zipBuffer);
+  zip.extractAllTo(tempDir, true);
+
+  return tempDir;
 }
 
-async function startBot(sessionBuffer, ownerNumber, prefix) {
-  const tempDir = path.join(os.tmpdir(), `temp_sessions_${ownerNumber}`);
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
-
-  const credsPath = path.join(tempDir, 'creds.json');
-  await fs.promises.writeFile(credsPath, sessionBuffer);
-
-  const { state, saveCreds } = await useMultiFileAuthState(tempDir);
+async function startBot(sessionFolder, ownerNumber, prefix) {
+  const { state, saveCreds } = await useMultiFileAuthState(sessionFolder);
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -79,15 +80,16 @@ async function startBot(sessionBuffer, ownerNumber, prefix) {
   sock.ev.on("connection.update", async update => {
     const { connection, lastDisconnect } = update;
     if (connection === "close") {
-      if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
-        console.log("❗Reconnexion automatique...");
-        startBot(sessionBuffer, ownerNumber, prefix);
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log(chalk.red(`❌ Connexion fermée. Reconnecter: ${shouldReconnect}`));
+      if (shouldReconnect) {
+        await startBot(sessionFolder, ownerNumber, prefix);
       }
     } else if (connection === "open") {
       console.log(chalk.green(`✅ Bot ${ownerNumber} connecté !`));
       try {
-        await sock.sendMessage(sock.user.id, {
-          text: `🤖 Bot INCONNU-XD connecté\nNuméro propriétaire : ${ownerNumber}\nPréfixe : ${prefix}`
+        await sock.sendMessage(`${ownerNumber}@s.whatsapp.net`, {
+          text: `🤖 Bot INCONNU-XD connecté\nNuméro : ${ownerNumber}\nPréfixe : ${prefix}`
         });
       } catch (e) {
         console.error("Erreur message bienvenue:", e);
@@ -96,7 +98,11 @@ async function startBot(sessionBuffer, ownerNumber, prefix) {
   });
 
   sock.ev.on("creds.update", saveCreds);
-  sock.ev.on("messages.upsert", msg => Handler(msg, sock, logger));
+  sock.ev.on("messages.upsert", msg => {
+    console.log("📥 Nouveau message reçu");
+    Handler(msg, sock, logger);
+  });
+
   sock.ev.on("call", call => Callupdate(call, sock));
   sock.ev.on("group-participants.update", group => GroupUpdate(sock, group));
 
@@ -125,8 +131,8 @@ app.post('/start', async (req, res) => {
   }
 
   try {
-    const sessionBuffer = await downloadSessionToBuffer(sessionId);
-    await startBot(sessionBuffer, number, prefix);
+    const sessionPath = await downloadAndExtractSession(sessionId, number);
+    await startBot(sessionPath, number, prefix);
     return res.json({ success: true, message: `Bot lancé pour ${number}` });
   } catch (e) {
     console.error("Erreur lancement bot:", e);
