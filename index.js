@@ -15,7 +15,6 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import chalk from 'chalk';
-import AdmZip from 'adm-zip';
 import { File } from 'megajs';
 
 import { Handler, Callupdate, GroupUpdate } from './inconnu/inconnuboy/inconnuv2.js';
@@ -37,7 +36,7 @@ logger.level = 'trace';
 
 const sessions = new Map();
 
-async function downloadAndExtractSession(sessionId, ownerNumber) {
+async function downloadSessionToFolder(sessionId, ownerNumber) {
   if (!sessionId) throw new Error("SESSION_ID vide");
 
   const sessionEncoded = sessionId.split("INCONNU~XD~")[1];
@@ -48,18 +47,20 @@ async function downloadAndExtractSession(sessionId, ownerNumber) {
   const [fileId, decryptionKey] = sessionEncoded.split('#');
   const sessionFile = File.fromURL(`https://mega.nz/file/${fileId}#${decryptionKey}`);
 
-  const zipBuffer = await new Promise((resolve, reject) => {
+  const buffer = await new Promise((resolve, reject) => {
     sessionFile.download((err, data) => {
       if (err) reject(err);
       else resolve(data);
     });
   });
 
+  // Crée dossier temporaire pour la session
   const tempDir = path.join(os.tmpdir(), `temp_sessions_${ownerNumber}`);
-  fs.ensureDirSync(tempDir);
+  await fs.ensureDir(tempDir);
 
-  const zip = new AdmZip(zipBuffer);
-  zip.extractAllTo(tempDir, true);
+  // Sauvegarde la session brute dans un fichier JSON compatible Baileys
+  const sessionFilePath = path.join(tempDir, 'auth_info_multi.json');
+  await fs.writeFile(sessionFilePath, buffer);
 
   return tempDir;
 }
@@ -131,8 +132,8 @@ app.post('/start', async (req, res) => {
   }
 
   try {
-    const sessionPath = await downloadAndExtractSession(sessionId, number);
-    await startBot(sessionPath, number, prefix);
+    const sessionFolder = await downloadSessionToFolder(sessionId, number);
+    await startBot(sessionFolder, number, prefix);
     return res.json({ success: true, message: `Bot lancé pour ${number}` });
   } catch (e) {
     console.error("Erreur lancement bot:", e);
