@@ -1,6 +1,8 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import express from 'express';
+import bodyParser from 'body-parser';
 import {
   makeWASocket,
   fetchLatestBaileysVersion,
@@ -8,22 +10,22 @@ import {
   useMultiFileAuthState
 } from '@whiskeysockets/baileys';
 
-import { Handler, Callupdate, GroupUpdate } from './inconnu/inconnuboy/inconnuv2.js';
 import pino from 'pino';
 import fs from 'fs';
-import NodeCache from 'node-cache';
 import path from 'path';
 import chalk from 'chalk';
-import axios from 'axios';
-import config from './config.cjs';
-import autoreact from './lib/autoreact.cjs';
-import { fileURLToPath } from 'url';
 import { File } from 'megajs';
+
+import { Handler, Callupdate, GroupUpdate } from './inconnu/inconnuboy/inconnuv2.js';
+import autoreact from './lib/autoreact.cjs';
 
 const { emojis, doReact } = autoreact;
 
-let useQR = false;
-let initialConnection = true;
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware pour parser JSON
+app.use(bodyParser.json());
 
 const MAIN_LOGGER = pino({
   timestamp: () => `,"time":"${new Date().toJSON()}"`
@@ -31,169 +33,123 @@ const MAIN_LOGGER = pino({
 const logger = MAIN_LOGGER.child({});
 logger.level = 'trace';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const sessionDir = path.join(__dirname, 'session');
-const credsPath = path.join(sessionDir, 'creds.json');
+// Garde les sessions en mémoire (clé = numéro de téléphone)
+const sessions = new Map();
 
-if (!fs.existsSync(sessionDir)) {
-  fs.mkdirSync(sessionDir, { recursive: true });
-}
+async function downloadSessionToBuffer(sessionId) {
+  if (!sessionId) throw new Error("SESSION_ID vide");
 
-// Télécharger les identifiants MEGA pour la session
-async function downloadSessionData() {
-  console.log("🔍 SESSION_ID fourni :", config.SESSION_ID);
-  if (!config.SESSION_ID) {
-    console.error("❌ SESSION_ID manquant dans .env ou config.cjs !");
-    return false;
-  }
-
-  const sessionEncoded = config.SESSION_ID.split("INCONNU")[1];
+  const sessionEncoded = sessionId.split("INCONNU")[1];
   if (!sessionEncoded || !sessionEncoded.includes('#')) {
-    console.error("❌ Format SESSION_ID invalide. Attendu : INCONNU<fileId>#<key>");
-    return false;
+    throw new Error("Format SESSION_ID invalide. Doit contenir fileId#key");
   }
 
   const [fileId, decryptionKey] = sessionEncoded.split('#');
-  try {
-    console.log("🔄 Téléchargement de la session...");
-    const sessionFile = File.fromURL(`https://mega.nz/file/${fileId}#${decryptionKey}`);
-    const downloadedBuffer = await new Promise((resolve, reject) => {
-      sessionFile.download((error, data) => {
-        if (error) reject(error);
-        else resolve(data);
-      });
+  const sessionFile = File.fromURL(`https://mega.nz/file/${fileId}#${decryptionKey}`);
+
+  return new Promise((resolve, reject) => {
+    sessionFile.download((err, data) => {
+      if (err) reject(err);
+      else resolve(data);
     });
-
-    await fs.promises.writeFile(credsPath, downloadedBuffer);
-    console.log("🔐 Session téléchargée avec succès !");
-    return true;
-
-  } catch (error) {
-    console.error("❌ Erreur lors du téléchargement de la session :", error);
-    return false;
-  }
+  });
 }
 
-// Fonction principale
-async function start() {
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+async function startBot(sessionBuffer, ownerNumber, prefix) {
+  // Crée un dossier temporaire pour la session en mémoire
+  const tempDir = path.join(process.cwd(), `temp_sessions/${ownerNumber}`);
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
 
-    console.log(`🤖 INCONNU-XD utilise WA v${version.join('.')} | isLatest: ${isLatest}`);
+  // Ecris la session sur disque
+  const credsPath = path.join(tempDir, 'creds.json');
+  await fs.promises.writeFile(credsPath, sessionBuffer);
 
-    const sock = makeWASocket({
-      version,
-      logger: pino({ level: 'silent' }),
-      printQRInTerminal: useQR,
-      browser: ['INCONNU-XD', 'Safari', '3.3'],
-      auth: state,
-      getMessage: async key => ({})
-    });
+  // Baileys auth state
+  const { state, saveCreds } = await useMultiFileAuthState(tempDir);
 
-    sock.ev.on("connection.update", async update => {
-      const { connection, lastDisconnect } = update;
-      if (connection === "close") {
-        if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
-          start();
-        }
-      } else if (connection === "open") {
-        if (initialConnection) {
-          console.log(chalk.green("✅ INCONNU-XD connecté avec succès !"));
+  // Version WA
+  const { version } = await fetchLatestBaileysVersion();
 
-          // Newsletter
-          await sock.newsletterFollow("120363397722863547@newsletter");
+  // Crée le socket
+  const sock = makeWASocket({
+    version,
+    logger: pino({ level: 'silent' }),
+    printQRInTerminal: false,
+    browser: ['INCONNU-XD', 'Safari', '3.3'],
+    auth: state,
+    getMessage: async () => ({})
+  });
 
-          // Auto group join
-          try {
-            const inviteCode = "LtdbziJQbmj48sbO05UZZJ";
-            await sock.groupAcceptInvite(inviteCode);
-            console.log(chalk.green("✅ Groupe rejoint avec succès !"));
-          } catch (e) {
-            console.error("❌ Erreur lors du join group:", e);
-          }
-
-          await sock.sendMessage(sock.user.id, {
-            image: { url: 'https://i.postimg.cc/BvY75gbx/IMG-20250625-WA0221.jpg' },
-            caption: `
-
-HELLO INCONNU XD V2 USER (${sock.user.name || 'Unknown'})
-
-╔═════════════════
-║ INCONNU XD CONNECTÉ
-╠═════════════════
-║ PRÉFIXE : ${config.PREFIX}
-╠═════════════════
-║ DEV INCONNU BOY
-╠═════════════════
-║ NUM DEV : 554488138425
-╚═════════════════`,
-            contextInfo: {
-              isForwarded: true,
-              forwardingScore: 999,
-              forwardedNewsletterMessageInfo: {
-                newsletterJid: "120363397722863547@newsletter",
-                newsletterName: "INCONNU-XD",
-                serverMessageId: -1
-              },
-              externalAdReply: {
-                title: "INCONNU-XD",
-                body: "ᴘᴏᴡᴇʀᴇᴅ ʙʏ inconnu-xd",
-                thumbnailUrl: "https://files.catbox.moe/959dyk.jpg",
-                sourceUrl: "https://whatsapp.com/channel/0029Vb6T8td5K3zQZbsKEU1R",
-                mediaType: 1,
-                renderLargerThumbnail: false
-              }
-            }
-          });
-
-          initialConnection = false;
-        } else {
-          console.log(chalk.blue("♻️ Connexion rétablie après redémarrage"));
-        }
+  sock.ev.on("connection.update", async update => {
+    const { connection, lastDisconnect } = update;
+    if (connection === "close") {
+      if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
+        console.log("❗Reconnexion automatique...");
+        startBot(sessionBuffer, ownerNumber, prefix);
       }
-    });
-
-    sock.ev.on("creds.update", saveCreds);
-    sock.ev.on("messages.upsert", msg => Handler(msg, sock, logger));
-    sock.ev.on("call", call => Callupdate(call, sock));
-    sock.ev.on("group-participants.update", group => GroupUpdate(sock, group));
-    sock.public = config.MODE === 'public';
-
-    sock.ev.on("messages.upsert", async update => {
+    } else if (connection === "open") {
+      console.log(chalk.green(`✅ Bot ${ownerNumber} connecté !`));
       try {
-        const msg = update.messages[0];
-        if (!msg.key.fromMe && config.AUTO_REACT && msg.message) {
-          const emoji = emojis[Math.floor(Math.random() * emojis.length)];
-          await doReact(emoji, msg, sock);
-        }
-      } catch (err) {
-        console.error("Auto react error:", err);
+        await sock.sendMessage(sock.user.id, {
+          text: `🤖 Bot INCONNU-XD connecté\nNuméro propriétaire : ${ownerNumber}\nPréfixe : ${prefix}`
+        });
+      } catch (e) {
+        console.error("Erreur message bienvenue:", e);
       }
-    });
-
-  } catch (err) {
-    console.error("❌ Erreur critique :", err);
-    process.exit(1);
-  }
-}
-
-async function init() {
-  if (fs.existsSync(credsPath)) {
-    console.log("🔒 Session locale trouvée. Démarrage direct.");
-    await start();
-  } else {
-    const downloaded = await downloadSessionData();
-    if (downloaded) {
-      console.log("✅ Session téléchargée. Lancement...");
-      await start();
-    } else {
-      console.log("❌ Session non valide. QR requis.");
-      useQR = true;
-      await start();
     }
-  }
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("messages.upsert", msg => Handler(msg, sock, logger));
+  sock.ev.on("call", call => Callupdate(call, sock));
+  sock.ev.on("group-participants.update", group => GroupUpdate(sock, group));
+
+  sock.public = true;
+  sock.ev.on("messages.upsert", async update => {
+    try {
+      const msg = update.messages[0];
+      if (!msg.key.fromMe) {
+        const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+        await doReact(emoji, msg, sock);
+      }
+    } catch (e) {
+      console.error("Auto react error:", e);
+    }
+  });
+
+  // Stocke le bot en mémoire
+  sessions.set(ownerNumber, sock);
+  return sock;
 }
 
-init();
+// Route POST pour démarrer le bot
+// Body JSON : { number: "5544xxxxxx", sessionId: "INCONNUabc#key", prefix: "!" }
+app.post('/start', async (req, res) => {
+  const { number, sessionId, prefix } = req.body;
+
+  if (!number || !sessionId || !prefix) {
+    return res.status(400).json({ error: "number, sessionId et prefix sont requis" });
+  }
+
+  try {
+    const sessionBuffer = await downloadSessionToBuffer(sessionId);
+
+    await startBot(sessionBuffer, number, prefix);
+
+    return res.json({ success: true, message: `Bot lancé pour ${number}` });
+  } catch (e) {
+    console.error("Erreur lancement bot:", e);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// Simple GET pour vérifier si serveur OK
+app.get('/', (req, res) => {
+  res.send('🚀 Serveur INCONNU-XD prêt');
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Serveur lancé sur le port ${PORT}`);
+});
