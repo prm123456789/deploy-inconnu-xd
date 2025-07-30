@@ -27,6 +27,9 @@ const PORT = process.env.PORT || 3000;
 // Middleware pour parser JSON
 app.use(bodyParser.json());
 
+// Servir les fichiers statiques dans mydata/
+app.use(express.static(path.join(process.cwd(), 'mydata')));
+
 const MAIN_LOGGER = pino({
   timestamp: () => `,"time":"${new Date().toJSON()}"`
 });
@@ -39,7 +42,7 @@ const sessions = new Map();
 async function downloadSessionToBuffer(sessionId) {
   if (!sessionId) throw new Error("SESSION_ID vide");
 
-  const sessionEncoded = sessionId.split("INCONNU")[1];
+  const sessionEncoded = sessionId.split("INCONNU~XD~")[1];
   if (!sessionEncoded || !sessionEncoded.includes('#')) {
     throw new Error("Format SESSION_ID invalide. Doit contenir fileId#key");
   }
@@ -145,9 +148,9 @@ app.post('/start', async (req, res) => {
   }
 });
 
-// Simple GET pour vérifier si serveur OK
+// Route GET pour servir la page HTML principale
 app.get('/', (req, res) => {
-  res.send('🚀 Serveur INCONNU-XD prêt');
+  res.sendFile(path.join(process.cwd(), 'mydata', 'index.html'));
 });
 
 app.listen(PORT, () => {
