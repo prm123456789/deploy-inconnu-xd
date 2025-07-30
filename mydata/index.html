@@ -1,27 +1,57 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>INCONNU XD - Bot Launcher</title>
-  <link rel="stylesheet" href="/style.css" />
+  <title>Lancer le bot INCONNU-XD</title>
 </head>
 <body>
-  <div class="container">
-    <h1>🤖 Lancer INCONNU XD</h1>
-    <form method="GET" action="/">
-      <label for="number">Numéro WhatsApp :</label>
-      <input type="text" id="number" name="number" placeholder="Ex: 22912345678" required />
+  <h1>Lancer le bot INCONNU-XD</h1>
+  <form id="botForm">
+    <label for="number">Numéro (ex: 554488138425) :</label><br/>
+    <input type="text" id="number" name="number" required /><br/><br/>
 
-      <label for="session">Session ID MEGA :</label>
-      <input type="text" id="session" name="session" placeholder="Ex: INCONNUabc123#xyz456" required />
+    <label for="sessionId">SESSION_ID (ex: INCONNUabc123#key456) :</label><br/>
+    <input type="text" id="sessionId" name="sessionId" required /><br/><br/>
 
-      <button type="submit">🚀 Lancer le Bot</button>
-    </form>
-    <p class="note">
-      Le bot sera lancé automatiquement avec ce numéro et cette session.<br/>
-      Assure-toi d’avoir bien uploadé ta session sur MEGA avec le bon format.
-    </p>
-  </div>
+    <label for="prefix">Préfixe (ex: ! ou .) :</label><br/>
+    <input type="text" id="prefix" name="prefix" value="!" required /><br/><br/>
+
+    <button type="submit">Lancer le bot</button>
+  </form>
+
+  <div id="result" style="margin-top:20px; font-weight:bold;"></div>
+
+  <script>
+    const form = document.getElementById('botForm');
+    const resultDiv = document.getElementById('result');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      resultDiv.textContent = "⏳ Lancement en cours...";
+
+      const data = {
+        number: form.number.value.trim(),
+        sessionId: form.sessionId.value.trim(),
+        prefix: form.prefix.value.trim()
+      };
+
+      try {
+        const res = await fetch('/start', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(data)
+        });
+        const json = await res.json();
+
+        if (json.success) {
+          resultDiv.textContent = "✅ " + json.message;
+        } else {
+          resultDiv.textContent = "❌ Erreur: " + (json.error || "Inconnue");
+        }
+      } catch (err) {
+        resultDiv.textContent = "❌ Erreur réseau ou serveur";
+      }
+    });
+  </script>
 </body>
 </html>
